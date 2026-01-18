@@ -1,0 +1,17 @@
+# FastAPI Framework
+fastapi
+
+# ASGI Server
+uvicorn
+
+# MongoDB Async Driver
+motor
+
+# Data Validation
+pydantic
+
+# Settings Management
+pydantic-settings
+
+# Environment Variables
+python-dotenv

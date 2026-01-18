@@ -1,0 +1,672 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     EMPLOYEE MANAGEMENT API - PSEUDOCODE                     ║
+║                                                                              ║
+║  Version: 2.0.0 (Production-Grade)                                          ║
+║  Architecture: Modular with Dependency Injection                            ║
+║  Database: MongoDB with Motor (Async Driver)                                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 1: PROJECT STRUCTURE
+════════════════════════════════════════════════════════════════════════════════
+
+PROJECT STRUCTURE:
+    employee_management_api/
+    │
+    ├── app/
+    │   ├── __init__.py              # Package marker
+    │   ├── main.py                  # FastAPI application entry point
+    │   ├── config.py                # Configuration from environment
+    │   ├── database.py              # MongoDB connection & dependency injection
+    │   │
+    │   ├── models/
+    │   │   ├── __init__.py          # Models package
+    │   │   └── employee.py          # Pydantic models & Department Enum
+    │   │
+    │   ├── routers/
+    │   │   ├── __init__.py          # Routers package
+    │   │   └── employees.py         # CRUD API endpoints
+    │   │
+    │   └── utils/
+    │       ├── __init__.py          # Utils package
+    │       └── logger.py            # Logging configuration
+    │
+    ├── .env                         # Environment variables (secrets)
+    ├── requirements.txt             # Python dependencies
+    └── run.py                       # Application runner script
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 2: CONFIGURATION MODULE (app/config.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Load configuration from environment variables for security
+
+CLASS Settings EXTENDS BaseSettings:
+    """
+    Application settings with validation.
+    Values loaded from .env file automatically.
+    """
+    
+    ATTRIBUTES:
+        # Database Configuration
+        mongodb_url: String = "mongodb://localhost:27017"
+        database_name: String = "employee_management"
+        collection_name: String = "employees"
+        
+        # Application Configuration
+        app_name: String = "Employee Management API"
+        app_version: String = "2.0.0"
+        debug: Boolean = False
+    
+    CONFIGURATION:
+        env_file = ".env"
+        case_sensitive = False
+
+FUNCTION get_settings() -> Settings:
+    """
+    Return cached settings instance.
+    Uses @lru_cache to load only once.
+    """
+    RETURN Settings()
+
+# Create global settings instance
+settings = get_settings()
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 3: LOGGING MODULE (app/utils/logger.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Replace print() with professional structured logging
+
+FUNCTION setup_logging():
+    """
+    Configure application-wide logging.
+    """
+    
+    # Set log level based on debug mode
+    IF settings.debug IS TRUE:
+        log_level = DEBUG
+    ELSE:
+        log_level = INFO
+    
+    # Create formatter
+    formatter = FORMAT("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    
+    # Create console handler
+    console_handler = StreamHandler(stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(log_level)
+    
+    # Configure root logger
+    root_logger = getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.addHandler(console_handler)
+    
+    # Reduce noise from third-party libraries
+    getLogger("uvicorn.access").setLevel(WARNING)
+    getLogger("motor").setLevel(WARNING)
+
+FUNCTION get_logger(name: String) -> Logger:
+    """
+    Get logger instance for a module.
+    Usage: logger = get_logger(__name__)
+    """
+    RETURN logging.getLogger(name)
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 4: DATABASE MODULE (app/database.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Manage MongoDB connections with dependency injection
+
+CLASS DatabaseManager:
+    """
+    Handles MongoDB connection lifecycle.
+    """
+    
+    ATTRIBUTES:
+        client: AsyncIOMotorClient = None
+        database: Database = None
+        collection: Collection = None
+    
+    ASYNC METHOD connect():
+        """
+        Establish MongoDB connection on application startup.
+        """
+        LOG INFO "Connecting to MongoDB..."
+        
+        TRY:
+            # Create async client
+            self.client = AsyncIOMotorClient(settings.mongodb_url)
+            
+            # Get database and collection references
+            self.database = self.client[settings.database_name]
+            self.collection = self.database[settings.collection_name]
+            
+            # Create unique index on employee_id
+            # This prevents duplicate IDs at database level
+            AWAIT self.collection.create_index("employee_id", unique=True)
+            
+            # Test connection
+            AWAIT self.client.admin.command("ping")
+            
+            LOG INFO "Successfully connected to MongoDB!"
+            
+        CATCH Exception AS e:
+            LOG ERROR "Failed to connect: {e}"
+            RAISE e
+    
+    ASYNC METHOD disconnect():
+        """
+        Close MongoDB connection on application shutdown.
+        """
+        LOG INFO "Disconnecting from MongoDB..."
+        
+        IF self.client IS NOT None:
+            self.client.close()
+            self.client = None
+            self.database = None
+            self.collection = None
+        
+        LOG INFO "Connection closed!"
+    
+    METHOD get_collection() -> Collection:
+        """
+        Return collection reference for dependency injection.
+        """
+        IF self.collection IS None:
+            RAISE RuntimeError("Database not connected")
+        RETURN self.collection
+
+# Create global database manager instance
+db_manager = DatabaseManager()
+
+ASYNC FUNCTION get_database() -> Collection:
+    """
+    Dependency injection function for FastAPI.
+    Used with Depends() in endpoint functions.
+    
+    Benefits:
+        - Makes endpoints testable (can mock database)
+        - Centralizes database access
+        - Clear dependency declaration
+    """
+    RETURN db_manager.get_collection()
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 5: DATA MODELS (app/models/employee.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Define data structures with Pydantic validation
+
+ENUM Department (String, Enum):
+    """
+    Valid department values.
+    Using Enum ensures data consistency.
+    """
+    ENGINEERING            = "Engineering"
+    MARKETING              = "Marketing"
+    FINANCE                = "Finance"
+    HUMAN_RESOURCES        = "Human Resources"
+    SALES                  = "Sales"
+    OPERATIONS             = "Operations"
+    INFORMATION_TECHNOLOGY = "Information Technology"
+    LEGAL                  = "Legal"
+    CUSTOMER_SERVICE       = "Customer Service"
+    RESEARCH               = "Research and Development"
+
+CLASS EmployeeBase (Pydantic BaseModel):
+    """
+    Base model with all employee fields.
+    """
+    
+    ATTRIBUTES:
+        employee_id: String
+            - Required field
+            - Min length: 1
+            - Max length: 50
+            - Pattern: alphanumeric, underscore, hyphen
+            - Example: "EMP001", "EMP-002"
+        
+        name: String
+            - Required field
+            - Min length: 2
+            - Max length: 100
+            - Example: "John Doe"
+        
+        age: Integer
+            - Required field
+            - Minimum: 18 (working age)
+            - Maximum: 100
+            - Example: 30
+        
+        department: Department
+            - Required field
+            - Must be valid Enum value
+            - Example: "Engineering"
+    
+    VALIDATORS:
+        @field_validator('name')
+        FUNCTION validate_name(value):
+            cleaned = value.strip()
+            IF cleaned IS EMPTY:
+                RAISE ValueError("Name cannot be empty")
+            RETURN cleaned
+
+CLASS EmployeeCreate EXTENDS EmployeeBase:
+    """
+    Model for POST /employees request body.
+    Inherits all fields from EmployeeBase.
+    All fields are required.
+    """
+    PASS
+
+CLASS EmployeeUpdate (Pydantic BaseModel):
+    """
+    Model for PATCH /employees/{id} request body.
+    All fields are optional for partial updates.
+    Note: employee_id cannot be updated.
+    """
+    
+    ATTRIBUTES:
+        name: Optional[String] = None
+        age: Optional[Integer] = None (18-100 if provided)
+        department: Optional[Department] = None
+
+CLASS EmployeeResponse (Pydantic BaseModel):
+    """
+    Model for API response containing employee data.
+    """
+    ATTRIBUTES: employee_id, name, age, department
+
+CLASS EmployeeListResponse (Pydantic BaseModel):
+    """
+    Model for paginated list response.
+    """
+    ATTRIBUTES:
+        total_count: Integer    # Total employees in database
+        page: Integer           # Current page number
+        limit: Integer          # Items per page
+        employees: List[EmployeeResponse]
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 6: API ENDPOINTS (app/routers/employees.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Define CRUD operations as API endpoints
+
+# Create router with prefix and tags
+router = APIRouter(prefix="/employees", tags=["Employees"])
+
+────────────────────────────────────────────────────────────────────────────────
+ENDPOINT 1: CREATE EMPLOYEE
+────────────────────────────────────────────────────────────────────────────────
+
+@router.POST("")
+ASYNC FUNCTION create_employee(
+    employee: EmployeeCreate,          # Request body (validated by Pydantic)
+    db: Collection = Depends(get_database)  # Injected database
+) -> Response:
+    """
+    Add a new employee to the database.
+    
+    Request: POST /employees
+    Body: {"employee_id": "EMP001", "name": "John", "age": 30, "department": "Engineering"}
+    
+    Responses:
+        201: Employee created successfully
+        400: Employee ID already exists (duplicate)
+        422: Validation error (invalid data)
+        500: Database error
+    """
+    
+    LOG INFO "Creating employee: {employee.employee_id}"
+    
+    # Step 1: Convert Pydantic model to dictionary
+    employee_dict = employee.model_dump()
+    
+    # Step 2: Convert Enum to string for MongoDB storage
+    employee_dict["department"] = employee.department.value
+    
+    TRY:
+        # Step 3: Attempt to insert into MongoDB
+        # MongoDB will raise DuplicateKeyError if employee_id exists
+        # This is safer than check-then-insert (prevents race conditions)
+        result = AWAIT db.insert_one(employee_dict)
+        
+        IF result.inserted_id:
+            # Step 4: Remove MongoDB's _id from response
+            employee_dict.pop("_id", None)
+            
+            LOG INFO "Created successfully: {employee.employee_id}"
+            
+            RETURN 201: {
+                "message": "Employee created successfully",
+                "data": {"employee": employee_dict}
+            }
+        ELSE:
+            LOG ERROR "Insert failed"
+            RAISE HTTPException(500, "Failed to create employee")
+    
+    CATCH DuplicateKeyError:
+        # Handle duplicate employee_id
+        LOG WARNING "Duplicate ID: {employee.employee_id}"
+        RAISE HTTPException(400, "Employee with ID '{id}' already exists")
+    
+    CATCH Exception AS e:
+        LOG ERROR "Database error: {e}"
+        RAISE HTTPException(500, "Database error: {e}")
+
+────────────────────────────────────────────────────────────────────────────────
+ENDPOINT 2: READ ALL EMPLOYEES (with Pagination)
+────────────────────────────────────────────────────────────────────────────────
+
+@router.GET("")
+ASYNC FUNCTION get_all_employees(
+    page: Integer = Query(default=1, ge=1),           # Page number (min 1)
+    limit: Integer = Query(default=10, ge=1, le=100), # Items per page (1-100)
+    department: Department = Query(default=None),     # Optional filter
+    db: Collection = Depends(get_database)
+) -> EmployeeListResponse:
+    """
+    Retrieve paginated list of employees.
+    
+    Request: GET /employees?page=1&limit=10&department=Engineering
+    
+    Responses:
+        200: List of employees with pagination metadata
+        422: Invalid query parameters
+        500: Database error
+    """
+    
+    LOG INFO "Fetching employees - Page: {page}, Limit: {limit}"
+    
+    TRY:
+        # Step 1: Build query filter
+        query_filter = {}
+        IF department IS NOT None:
+            query_filter["department"] = department.value
+        
+        # Step 2: Calculate pagination offset
+        skip = (page - 1) * limit
+        
+        # Step 3: Get total count for metadata
+        total_count = AWAIT db.count_documents(query_filter)
+        
+        # Step 4: Query with pagination
+        cursor = db.find(query_filter, projection={"_id": 0})
+                   .skip(skip)
+                   .limit(limit)
+        
+        employees = AWAIT cursor.to_list(length=limit)
+        
+        LOG INFO "Found {len(employees)} employees (Total: {total_count})"
+        
+        # Step 5: Return paginated response
+        RETURN 200: {
+            "total_count": total_count,
+            "page": page,
+            "limit": limit,
+            "employees": employees
+        }
+    
+    CATCH Exception AS e:
+        LOG ERROR "Database error: {e}"
+        RAISE HTTPException(500, "Database error: {e}")
+
+────────────────────────────────────────────────────────────────────────────────
+ENDPOINT 3: READ SINGLE EMPLOYEE
+────────────────────────────────────────────────────────────────────────────────
+
+@router.GET("/{employee_id}")
+ASYNC FUNCTION get_employee(
+    employee_id: String,               # From URL path
+    db: Collection = Depends(get_database)
+) -> EmployeeResponse:
+    """
+    Retrieve a specific employee by ID.
+    
+    Request: GET /employees/EMP001
+    
+    Responses:
+        200: Employee found
+        404: Employee not found
+        500: Database error
+    """
+    
+    LOG INFO "Fetching employee: {employee_id}"
+    
+    TRY:
+        # Query MongoDB by employee_id
+        employee = AWAIT db.find_one(
+            filter={"employee_id": employee_id},
+            projection={"_id": 0}
+        )
+        
+        IF employee IS None:
+            LOG WARNING "Not found: {employee_id}"
+            RAISE HTTPException(404, "Employee with ID '{id}' not found")
+        
+        LOG INFO "Found: {employee_id}"
+        RETURN 200: employee
+    
+    CATCH HTTPException:
+        RAISE  # Re-raise HTTP exceptions
+    
+    CATCH Exception AS e:
+        LOG ERROR "Database error: {e}"
+        RAISE HTTPException(500, "Database error: {e}")
+
+────────────────────────────────────────────────────────────────────────────────
+ENDPOINT 4: UPDATE EMPLOYEE (PATCH - Partial Update)
+────────────────────────────────────────────────────────────────────────────────
+
+@router.PATCH("/{employee_id}")
+ASYNC FUNCTION update_employee(
+    employee_id: String,               # From URL path
+    employee_update: EmployeeUpdate,   # Request body (partial)
+    db: Collection = Depends(get_database)
+) -> Response:
+    """
+    Update specific fields of an employee.
+    Uses PATCH (not PUT) for partial updates.
+    
+    Request: PATCH /employees/EMP001
+    Body: {"age": 31}  (only fields to update)
+    
+    Responses:
+        200: Employee updated successfully
+        400: No valid fields provided
+        404: Employee not found
+        422: Validation error
+        500: Database error
+    """
+    
+    LOG INFO "Updating employee: {employee_id}"
+    
+    TRY:
+        # Step 1: Check if employee exists
+        existing = AWAIT db.find_one({"employee_id": employee_id})
+        
+        IF existing IS None:
+            LOG WARNING "Not found for update: {employee_id}"
+            RAISE HTTPException(404, "Employee not found")
+        
+        # Step 2: Build update document with non-null fields only
+        update_data = {}
+        FOR key, value IN employee_update.model_dump().items():
+            IF value IS NOT None:
+                # Convert Enum to string if department
+                IF value IS Department:
+                    update_data[key] = value.value
+                ELSE:
+                    update_data[key] = value
+        
+        # Step 3: Validate at least one field provided
+        IF update_data IS EMPTY:
+            LOG WARNING "No fields provided: {employee_id}"
+            RAISE HTTPException(400, "No valid fields provided for update")
+        
+        # Step 4: Execute update
+        AWAIT db.update_one(
+            filter={"employee_id": employee_id},
+            update={"$set": update_data}
+        )
+        
+        # Step 5: Fetch and return updated document
+        updated = AWAIT db.find_one(
+            {"employee_id": employee_id},
+            projection={"_id": 0}
+        )
+        
+        LOG INFO "Updated: {employee_id}"
+        
+        RETURN 200: {
+            "message": "Employee updated successfully",
+            "data": {"employee": updated}
+        }
+    
+    CATCH HTTPException:
+        RAISE
+    
+    CATCH Exception AS e:
+        LOG ERROR "Database error: {e}"
+        RAISE HTTPException(500, "Database error: {e}")
+
+────────────────────────────────────────────────────────────────────────────────
+ENDPOINT 5: DELETE EMPLOYEE
+────────────────────────────────────────────────────────────────────────────────
+
+@router.DELETE("/{employee_id}")
+ASYNC FUNCTION delete_employee(
+    employee_id: String,
+    db: Collection = Depends(get_database)
+) -> Response:
+    """
+    Remove an employee from the database.
+    
+    Request: DELETE /employees/EMP001
+    
+    Responses:
+        200: Employee deleted successfully
+        404: Employee not found
+        500: Database error
+    """
+    
+    LOG INFO "Deleting employee: {employee_id}"
+    
+    TRY:
+        # Step 1: Check if employee exists
+        existing = AWAIT db.find_one({"employee_id": employee_id})
+        
+        IF existing IS None:
+            LOG WARNING "Not found for deletion: {employee_id}"
+            RAISE HTTPException(404, "Employee not found")
+        
+        # Step 2: Execute deletion
+        result = AWAIT db.delete_one({"employee_id": employee_id})
+        
+        # Step 3: Verify deletion
+        IF result.deleted_count == 1:
+            LOG INFO "Deleted: {employee_id}"
+            RETURN 200: {
+                "message": "Employee deleted successfully",
+                "data": {"deleted_employee_id": employee_id}
+            }
+        ELSE:
+            LOG ERROR "Delete failed: {employee_id}"
+            RAISE HTTPException(500, "Failed to delete employee")
+    
+    CATCH HTTPException:
+        RAISE
+    
+    CATCH Exception AS e:
+        LOG ERROR "Database error: {e}"
+        RAISE HTTPException(500, "Database error: {e}")
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 7: MAIN APPLICATION (app/main.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Initialize and configure FastAPI application
+
+# Setup logging on module load
+CALL setup_logging()
+logger = get_logger(__name__)
+
+ASYNC CONTEXT MANAGER lifespan(app: FastAPI):
+    """
+    Handle application startup and shutdown.
+    """
+    
+    # ══════ STARTUP ══════
+    LOG INFO "Starting Employee Management API"
+    LOG INFO "Version: {settings.app_version}"
+    LOG INFO "Debug: {settings.debug}"
+    
+    # Connect to MongoDB
+    AWAIT db_manager.connect()
+    
+    LOG INFO "Application ready!"
+    LOG INFO "Documentation: http://localhost:8000/docs"
+    
+    YIELD  # ← Application runs here
+    
+    # ══════ SHUTDOWN ══════
+    LOG INFO "Shutting down..."
+    
+    # Disconnect from MongoDB
+    AWAIT db_manager.disconnect()
+    
+    LOG INFO "Shutdown complete!"
+
+# Create FastAPI application
+app = FastAPI(
+    title = settings.app_name,
+    version = settings.app_version,
+    description = "Production-grade Employee Management API",
+    lifespan = lifespan
+)
+
+# Add CORS middleware (for frontend access)
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+
+# Include employee router
+app.include_router(employees_router)
+
+@app.GET("/")
+FUNCTION root():
+    """Root endpoint with API info."""
+    RETURN {"message": "Welcome", "docs": "/docs"}
+
+@app.GET("/health")
+ASYNC FUNCTION health_check():
+    """Check API and database health."""
+    TRY:
+        AWAIT db_manager.client.admin.command("ping")
+        db_status = "healthy"
+    CATCH:
+        db_status = "unhealthy"
+    
+    RETURN {"status": "running", "database": db_status}
+
+════════════════════════════════════════════════════════════════════════════════
+SECTION 8: APPLICATION RUNNER (run.py)
+════════════════════════════════════════════════════════════════════════════════
+
+PURPOSE: Entry point script to start the server
+
+IF __name__ == "__main__":
+    PRINT "Starting Employee Management API"
+    PRINT "Documentation: http://localhost:8000/docs"
+    
+    RUN uvicorn(
+        app = "app.main:app",
+        host = "0.0.0.0",
+        port = 8000,
+        reload = settings.debug
+    )
+
+════════════════════════════════════════════════════════════════════════════════
+                              END OF PSEUDOCODE
+════════════════════════════════════════════════════════════════════════════════
