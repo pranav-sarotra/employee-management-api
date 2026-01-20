@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: employee-management-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGODB_URL
+        sync: false
+      - key: DATABASE_NAME
+        value: employee_management
+      - key: COLLECTION_NAME
+        value: employees
+      - key: DEBUG
+        value: false
