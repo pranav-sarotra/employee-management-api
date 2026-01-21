@@ -3,26 +3,19 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104.1-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7.0-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 
 A **production-grade RESTful API** for managing employee information, built with **FastAPI** and **MongoDB**.
 
----
+🔗 <b>Deployed API:</b>
 
-## 📖 Table of Contents
-
-- [Features](#-features)
-- [Tech Stack](#-tech-stack)
-- [Project Structure](#-project-structure)
-- [Quick Start](#-quick-start)
-- [API Endpoints](#-api-endpoints)
-- [Valid Departments](#-valid-departments)
-- [API Examples](#-api-examples)
-- [Deployment](#-deployment)
-- [Screenshots](#-screenshots)
-- [Contributing](#-contributing)
-- [License](#-license)
-- [Author](#-author)
+<a href="https://employee-management-api-psbq.onrender.com/docs" style="text-decoration:none;">
+  <img
+    src="https://img.shields.io/badge/Live%20Demo-blue?style=for-the-badge"
+    alt="Live Demo"
+    height="256"
+    style="vertical-align:middle;"
+  />
+</a>
 
 ---
 
